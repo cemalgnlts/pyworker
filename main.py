@@ -382,6 +382,59 @@ class Backend:
 
     # --- Model inference route (BASİTLEŞTİRİLMİŞ: streaming yok) ------------
 
+    def _debug_signature_formats(self, auth_data: dict) -> None:
+        """İmzanın GERÇEKTE hangi string üzerine atıldığını bulmak için çok sayıda format dener."""
+        try:
+            sig = base64.b64decode(auth_data["signature"])
+        except Exception as e:
+            log.info(f"İMZA TEŞHİSİ: signature decode edilemedi: {e}")
+            return
+        own_url = get_url()
+        body_url = auth_data.get("url")
+
+        # http/https şema varyasyonları da dene (USE_SSL imzayı etkiliyor olabilir)
+        url_variants = []
+        for u in [body_url, own_url]:
+            if not u:
+                continue
+            url_variants.append(u)
+            if u.startswith("https://"):
+                url_variants.append("http://" + u[len("https://"):])
+            elif u.startswith("http://"):
+                url_variants.append("https://" + u[len("http://"):])
+
+        candidates = {}
+        for u in url_variants:
+            candidates[f"url={u}: indent=4 sort"] = json.dumps({"url": u}, indent=4, sort_keys=True)
+            candidates[f"url={u}: compact sort"] = json.dumps({"url": u}, sort_keys=True)
+            candidates[f"url={u}: ham"] = u
+        for fld in ["request_idx", "reqnum", "endpoint", "cost", "__request_id"]:
+            if fld in auth_data:
+                v = auth_data[fld]
+                candidates[f"{fld}: ham"] = str(v)
+                candidates[f"{fld}: dumps i4 sort"] = json.dumps({fld: v}, indent=4, sort_keys=True)
+        ad_no_sig = {k: v for k, v in auth_data.items() if k != "signature"}
+        candidates["auth_data(sig hariç) i4 sort"] = json.dumps(ad_no_sig, indent=4, sort_keys=True)
+        candidates["auth_data(sig hariç) compact sort"] = json.dumps(ad_no_sig, sort_keys=True)
+        if own_url:
+            candidates["url+request_idx i4 sort"] = json.dumps(
+                {"url": own_url, "request_idx": auth_data.get("request_idx")}, indent=4, sort_keys=True
+            )
+
+        log.info("=== İMZA FORMAT TEŞHİSİ ===")
+        found = False
+        for label, message in candidates.items():
+            try:
+                h = SHA256.new(message.encode())
+                pkcs1_15.new(self._pubkey).verify(h, sig)
+                log.info(f"  ✅ EŞLEŞTİ -> {label} | message={message!r}")
+                found = True
+            except (ValueError, TypeError):
+                log.info(f"  ❌ {label}")
+        if not found:
+            log.info("  HİÇBİR ADAY EŞLEŞMEDİ")
+        log.info("=== TEŞHİS BİTTİ ===")
+
     async def model_request_handler(self, request: web.Request) -> web.Response:
         try:
             data = await request.json()
@@ -393,6 +446,9 @@ class Backend:
         log.debug(f"Gelen auth_data: {data.get('auth_data')}")
         log.debug(f"Gelen query string: {dict(request.query)}")
         log.debug(f"Worker'ın kendi get_url(): {get_url()}")
+
+        if not UNSECURED and self._pubkey is not None:
+            self._debug_signature_formats(data["auth_data"])
 
         if not self.check_signature(auth_data):
             return web.Response(status=401)
