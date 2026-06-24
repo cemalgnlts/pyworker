@@ -226,6 +226,7 @@ class Backend:
         self._pubkey: Optional[RSA.RsaKey] = None
         self._pubkey_fetch_complete = asyncio.Event()
         self.max_sessions = int(os.environ.get("MAX_SESSIONS", "8"))
+        self._last_api_key = None
 
     @cached_property
     def session(self) -> ClientSession:
@@ -392,22 +393,42 @@ class Backend:
         own_url = get_url()
         body_url = auth_data.get("url")
 
-        # http/https şema varyasyonları da dene (USE_SSL imzayı etkiliyor olabilir)
-        url_variants = []
-        for u in [body_url, own_url]:
-            if not u:
-                continue
-            url_variants.append(u)
-            if u.startswith("https://"):
-                url_variants.append("http://" + u[len("https://"):])
-            elif u.startswith("http://"):
-                url_variants.append("https://" + u[len("http://"):])
+        public_ip = os.environ.get("PUBLIC_IPADDR", "")
+        worker_port_ext = os.environ.get(f"VAST_TCP_PORT_{WORKER_PORT}", "")
+        internal_port = str(WORKER_PORT)
+
+        # Çok sayıda url varyasyonu üret
+        base_urls = set()
+        for u in [own_url, body_url]:
+            if u:
+                base_urls.add(u)
+        for scheme in ["http", "https"]:
+            for port in [worker_port_ext, internal_port]:
+                if public_ip and port:
+                    base_urls.add(f"{scheme}://{public_ip}:{port}")
+                    base_urls.add(f"{scheme}://{public_ip}:{port}/")
+            if public_ip:
+                base_urls.add(f"{scheme}://{public_ip}")
 
         candidates = {}
-        for u in url_variants:
-            candidates[f"url={u}: indent=4 sort"] = json.dumps({"url": u}, indent=4, sort_keys=True)
-            candidates[f"url={u}: compact sort"] = json.dumps({"url": u}, sort_keys=True)
-            candidates[f"url={u}: ham"] = u
+        for u in base_urls:
+            candidates[f"url={u} | i4 sort"] = json.dumps({"url": u}, indent=4, sort_keys=True)
+            candidates[f"url={u} | compact sort"] = json.dumps({"url": u}, sort_keys=True)
+            candidates[f"url={u} | ham"] = u
+
+        # api_key query parametresinin içindeki msg'i de aday olarak dene
+        api_key_raw = getattr(self, "_last_api_key", None)
+        if api_key_raw:
+            try:
+                decoded = base64.b64decode(api_key_raw + "=" * (-len(api_key_raw) % 4))
+                api_obj = json.loads(decoded)
+                msg = api_obj.get("msg")
+                if msg:
+                    candidates["api_key.msg ham"] = msg
+                    candidates["api_key.msg i4 sort"] = json.dumps(json.loads(msg), indent=4, sort_keys=True)
+                    candidates["api_key.msg compact sort"] = json.dumps(json.loads(msg), sort_keys=True)
+            except Exception as e:
+                log.info(f"api_key decode edilemedi: {e}")
         for fld in ["request_idx", "reqnum", "endpoint", "cost", "__request_id"]:
             if fld in auth_data:
                 v = auth_data[fld]
@@ -447,6 +468,7 @@ class Backend:
         log.debug(f"Gelen query string: {dict(request.query)}")
         log.debug(f"Worker'ın kendi get_url(): {get_url()}")
 
+        self._last_api_key = request.query.get("api_key")
         if not UNSECURED and self._pubkey is not None:
             self._debug_signature_formats(data["auth_data"])
 
