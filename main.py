@@ -42,6 +42,7 @@ from Crypto.Hash import SHA256
 
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("simple_pyworker")
+log.info("=== simple_pyworker VERSION 2026-06-24-imza-debug-v3 ===")
 
 # ---------------------------------------------------------------------------
 # Sabitler / Config (env var'lardan okunuyor)
@@ -87,12 +88,12 @@ class AuthData:
     @staticmethod
     def from_dict(d: dict) -> "AuthData":
         return AuthData(
-            cost=d["cost"],
-            endpoint=d["endpoint"],
-            reqnum=d["reqnum"],
-            request_idx=d["request_idx"],
+            cost=d.get("cost"),
+            endpoint=d.get("endpoint"),
+            reqnum=d.get("reqnum"),
+            request_idx=d.get("request_idx"),
             signature=d["signature"],
-            url=d["url"],
+            url=d.get("url") or get_url(),  # url body'de gelmiyorsa worker'ın kendi adresi (imza bunun üzerine atılıyor)
         )
 
 
