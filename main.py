@@ -23,6 +23,7 @@ Bu üç eksiği istersen sonradan ekleriz; şimdilik "basit ve çalışır" önc
 """
 
 import os
+import ssl
 import json
 import time
 import base64
@@ -55,7 +56,6 @@ MASTER_TOKEN = os.environ.get("MASTER_TOKEN", "")
 
 MODEL_HEALTH_URL = os.environ.get("MODEL_HEALTH_URL", "http://127.0.0.1:5000/health")
 MODEL_BASE_URL = os.environ.get("MODEL_BASE_URL", "http://127.0.0.1:5000")
-MODEL_ROUTE = os.environ.get("MODEL_ROUTE", "/v1/chat/completions")
 
 FAKE_MAX_THROUGHPUT = float(os.environ.get("FAKE_MAX_THROUGHPUT", "100.0"))  # benchmark yok, sabit değer
 HEALTHCHECK_POLL_INTERVAL = 0.3
@@ -383,7 +383,7 @@ class Backend:
         reqnum = auth_data.reqnum
         self.metrics.request_start(reqnum)
         try:
-            async with self.session.post(f"{MODEL_BASE_URL}{MODEL_ROUTE}", json=payload) as res:
+            async with self.session.post(f"{MODEL_BASE_URL}{request.path}", json=payload) as res:
                 result = await res.json()
                 success = res.status == 200
         except Exception as e:
@@ -427,13 +427,24 @@ async def main() -> None:
     app.router.add_post("/session/health", backend.session_health_handler)
     app.router.add_post("/session/end", backend.session_end_handler)
     app.router.add_post("/pyworker/update", backend.pyworker_update_handler)
-    app.router.add_post(MODEL_ROUTE, backend.model_request_handler)
+    app.router.add_post("/v1/completions", backend.model_request_handler)
+    app.router.add_post("/v1/chat/completions", backend.model_request_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", WORKER_PORT)
+
+    ssl_context = None
+    if USE_SSL:
+        log.debug("Getting SSL Certificate from /etc/instance.crt")
+        try:
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(certfile="/etc/instance.crt", keyfile="/etc/instance.key")
+        except Exception as ex:
+            raise Exception(f"Failed to get SSL Certificate: {ex}")
+
+    site = web.TCPSite(runner, "0.0.0.0", WORKER_PORT, ssl_context=ssl_context)
     await site.start()
-    log.info(f"Sunucu {WORKER_PORT} portunda dinliyor (basitleştirilmiş PyWorker)")
+    log.info(f"Sunucu {WORKER_PORT} portunda dinliyor (SSL={'açık' if USE_SSL else 'kapalı'}, basitleştirilmiş PyWorker)")
 
     await backend.start_tracking()
 
