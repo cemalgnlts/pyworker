@@ -253,6 +253,7 @@ class Backend:
             self._pubkey_fetch_complete.set()
             return
         url = REPORT_ADDR_LIST[0].rstrip("/") + "/pubkey/"
+        log.debug(f"Pubkey şu adresten çekiliyor: {url}")
         timeout = ClientTimeout(total=10)
         for attempt in range(1, 6):
             try:
@@ -262,7 +263,7 @@ class Backend:
                         text = await response.text()
                         self._pubkey = RSA.import_key(text)
                         self._pubkey_fetch_complete.set()
-                        log.debug(f"Pubkey alındı (deneme {attempt})")
+                        log.debug(f"Pubkey alındı (deneme {attempt}), key fingerprint: {text.strip()[:40]}...")
                         return
             except Exception as e:
                 log.debug(f"Pubkey alınamadı (deneme {attempt}/5): {e}")
@@ -275,6 +276,7 @@ class Backend:
         if UNSECURED:
             return True
         if self._pubkey is None:
+            log.error("İmza reddedildi: pubkey yüklenmemiş")
             return False
         message = json.dumps({"url": auth_data.url}, indent=4, sort_keys=True)
         h = SHA256.new(message.encode())
@@ -282,7 +284,7 @@ class Backend:
             pkcs1_15.new(self._pubkey).verify(h, base64.b64decode(auth_data.signature))
             return True
         except (ValueError, TypeError):
-            log.error(f"İmza doğrulaması başarısız: {auth_data.signature}")
+            log.error(f"İmza doğrulaması başarısız. İmzalanan message: {message!r} | sig: {auth_data.signature[:20]}...")
             return False
 
     # --- Session route handler'ları (DOKUNULMADI) ---------------------------
