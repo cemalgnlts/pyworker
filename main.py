@@ -379,6 +379,10 @@ class Backend:
         except Exception as e:
             return web.json_response({"error": f"invalid request: {e}"}, status=422)
 
+        log.debug(f"Gelen auth_data: {data.get('auth_data')}")
+        log.debug(f"Gelen query string: {dict(request.query)}")
+        log.debug(f"Worker'ın kendi get_url(): {get_url()}")
+
         if not self.check_signature(auth_data):
             return web.Response(status=401)
 
