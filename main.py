@@ -281,10 +281,20 @@ class Backend:
         message = json.dumps({"url": auth_data.url}, indent=4, sort_keys=True)
         h = SHA256.new(message.encode())
         try:
-            pkcs1_15.new(self._pubkey).verify(h, base64.b64decode(auth_data.signature))
+            sig_bytes = base64.b64decode(auth_data.signature)
+        except Exception as e:
+            log.error(f"İmza base64 decode edilemedi: {e}")
+            return False
+        try:
+            pkcs1_15.new(self._pubkey).verify(h, sig_bytes)
             return True
         except (ValueError, TypeError):
-            log.error(f"İmza doğrulaması başarısız. İmzalanan message: {message!r} | sig: {auth_data.signature[:20]}...")
+            log.error(
+                f"İmza doğrulaması başarısız. "
+                f"sig string uzunluğu={len(auth_data.signature)}, "
+                f"decode byte uzunluğu={len(sig_bytes)} (256 bekleniyor), "
+                f"message={message!r}"
+            )
             return False
 
     # --- Session route handler'ları (DOKUNULMADI) ---------------------------
