@@ -143,17 +143,19 @@ class Metrics:
         self.update_pending = True  # bir sonraki tick'te HEMEN bildir (bkz. daha önceki sohbet)
         log.debug(f"model_is_loaded=True, loadtime={self.loadtime:.3f}s, hemen bildiriliyor")
 
-    def request_start(self, reqnum: int) -> None:
-        self.requests_working[reqnum] = True
+    def request_start(self, request_idx: int) -> None:
+        self.requests_working[request_idx] = True
         self.update_pending = True
+        log.debug(f"request_start idx={request_idx}, working={list(self.requests_working.keys())}")
 
-    def request_end(self, reqnum: int, success: bool) -> None:
-        self.requests_working.pop(reqnum, None)
+    def request_end(self, request_idx: int, success: bool) -> None:
+        self.requests_working.pop(request_idx, None)
         if success:
-            self.requests_deleting_success.append(reqnum)
+            self.requests_deleting_success.append(request_idx)
         else:
-            self.requests_deleting_failed.append(reqnum)
+            self.requests_deleting_failed.append(request_idx)
         self.update_pending = True
+        log.debug(f"request_end idx={request_idx} success={success}, working={list(self.requests_working.keys())}")
 
     async def _send_metrics_loop(self) -> None:
         while True:
@@ -475,17 +477,17 @@ class Backend:
         if not self.check_signature(auth_data):
             return web.Response(status=401)
 
-        reqnum = auth_data.reqnum
-        self.metrics.request_start(reqnum)
+        request_idx = auth_data.request_idx
+        self.metrics.request_start(request_idx)
         try:
             async with self.session.post(f"{MODEL_BASE_URL}{request.path}", json=payload) as res:
                 result = await res.json()
                 success = res.status == 200
         except Exception as e:
-            self.metrics.request_end(reqnum, success=False)
+            self.metrics.request_end(request_idx, success=False)
             return web.json_response({"error": str(e)}, status=502)
 
-        self.metrics.request_end(reqnum, success=success)
+        self.metrics.request_end(request_idx, success=success)
         return web.json_response(result, status=200 if success else 502)
 
     # --- Session garbage collection (basit) ----------------------------------
