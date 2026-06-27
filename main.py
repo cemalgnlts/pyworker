@@ -47,8 +47,9 @@ UNSECURED = os.environ.get("UNSECURED", "false").lower() == "true"
 MASTER_TOKEN = os.environ.get("MASTER_TOKEN", "")
 PYWORKER_VERSION = os.environ.get("PYWORKER_VERSION", "llamacpp-1.0")
 
-# llama-server varsayılan portu 8080. Seninki farklıysa MODEL_BASE_URL ver.
-MODEL_BASE_URL = os.environ.get("MODEL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+# llama-server portu LLAMA_ARG_PORT'tan okunur (llama-server da bunu kullanır). Yoksa 8080.
+_MODEL_PORT = os.environ.get("LLAMA_ARG_PORT", "8080")
+MODEL_BASE_URL = os.environ.get("MODEL_BASE_URL", f"http://127.0.0.1:{_MODEL_PORT}").rstrip("/")
 MODEL_HEALTH_URL = os.environ.get("MODEL_HEALTH_URL", f"{MODEL_BASE_URL}/health")
 
 # === İstek tabanlı ölçek ===
@@ -298,24 +299,30 @@ class Backend:
     # --- model isteği ---
 
     async def model_request_handler(self, request: web.Request) -> web.StreamResponse:
+        log.info(f"İstek geldi: {request.method} {request.path}")
         try:
             data = await request.json()
             auth = AuthData.from_dict(data["auth_data"])
             payload = data.get("payload", {})
         except Exception as e:
+            log.error(f"İstek parse edilemedi: {e}")
             return web.json_response({"error": f"invalid request: {e}"}, status=422)
 
+        log.debug(f"auth.url={auth.url!r} | get_url()={get_url()!r} | request_idx={auth.request_idx}")
         if not self.check_signature(auth):
             return web.Response(status=401)
 
         info = RequestInfo(request_idx=auth.request_idx, entered_at=time.time(), started_at=time.time())
         self.metrics.start(info)
+        log.info(f"İstek {auth.request_idx} -> modele iletiliyor: {MODEL_BASE_URL}{request.path} (stream={payload.get('stream')})")
         try:
             return await self._forward(request, payload, info)
         except asyncio.CancelledError:
+            log.warning(f"İstek {auth.request_idx} iptal edildi (client koptu)")
             self.metrics.end(info, success=False)
             raise
         except Exception as e:
+            log.error(f"İstek {auth.request_idx} hata: {e}")
             self.metrics.end(info, success=False)
             return web.json_response({"error": str(e)}, status=502)
 
@@ -323,6 +330,7 @@ class Backend:
         async with self.session.post(f"{MODEL_BASE_URL}{request.path}", json=payload) as model_res:
             ctype = model_res.content_type or ""
             is_stream = ctype.startswith("text/event-stream") or model_res.headers.get("Transfer-Encoding") == "chunked"
+            log.info(f"İstek {info.request_idx} model yanıtı: status={model_res.status} ctype={ctype} stream={is_stream}")
 
             if is_stream:
                 res = web.StreamResponse(status=model_res.status)
@@ -418,6 +426,11 @@ class Backend:
             return web.json_response({"error": f"failed: {e}"}, status=500)
         return web.json_response({"ok": True})
 
+    async def catchall_handler(self, request: web.Request) -> web.Response:
+        # Kayıtlı route'lara düşmeyen her istek burada loglanır (teşhis için).
+        log.warning(f"EŞLEŞMEYEN istek: {request.method} {request.path}  query={dict(request.query)}")
+        return web.Response(status=404)
+
     async def session_gc_loop(self) -> None:
         while True:
             await sleep(5)
@@ -449,6 +462,7 @@ async def main() -> None:
     app.router.add_post("/v1/chat/completions", backend.model_request_handler)
     app.router.add_post("/v1/completions", backend.model_request_handler)
     app.router.add_post("/completion", backend.model_request_handler)
+    app.router.add_route("*", "/{tail:.*}", backend.catchall_handler)  # en son; eşleşmeyenleri loglar
 
     runner = web.AppRunner(app)
     await runner.setup()
