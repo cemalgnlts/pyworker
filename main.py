@@ -281,6 +281,64 @@ class Backend:
             log.error(f"İmza doğrulanamadı. url={auth.url!r}")
             return False
 
+    def _probe_signature(self, auth_data: dict, query: dict) -> None:
+        """GEÇİCİ TEŞHİS: imza neden tutmuyor? pubkey mi yanlış, format mı?"""
+        if self._pubkey is None:
+            log.error("PROBE: pubkey yok"); return
+
+        def verify(msg: str, sig_b64: str) -> bool:
+            if msg is None or not sig_b64:
+                return False
+            try:
+                sig = base64.b64decode(sig_b64 + "=" * (-len(sig_b64) % 4))
+                pkcs1_15.new(self._pubkey).verify(SHA256.new(msg.encode()), sig)
+                return True
+            except Exception:
+                return False
+
+        # 1) PUBKEY DOĞRU MU? api_key içindeki bilinen msg+signature ile test
+        raw = query.get("api_key")
+        if raw:
+            try:
+                obj = json.loads(base64.b64decode(raw + "=" * (-len(raw) % 4)))
+                msg, sig = obj.get("msg"), obj.get("signature")
+                cands = {
+                    "msg ham": msg,
+                    "msg json sort": json.dumps(json.loads(msg), sort_keys=True) if msg else None,
+                    "msg json compact": json.dumps(json.loads(msg), separators=(",", ":")) if msg else None,
+                    "msg json i4 sort": json.dumps(json.loads(msg), indent=4, sort_keys=True) if msg else None,
+                }
+                hit = [n for n, m in cands.items() if verify(m, sig)]
+                if hit:
+                    log.error(f"PROBE: ✅ PUBKEY DOĞRU (api_key imzası şu formatta tuttu: {hit})")
+                else:
+                    log.error("PROBE: ❌ pubkey api_key imzasını HİÇ tutmadı -> PUBKEY YANLIŞ olabilir")
+            except Exception as e:
+                log.error(f"PROBE: api_key çözülemedi (log kırpılmış olabilir): {e}")
+
+        # 2) auth_data.signature HANGİ mesaj üzerine atılı?
+        sig = auth_data.get("signature")
+        url = auth_data.get("url", "")
+        cands: Dict[str, str] = {}
+        for u in {url, url.rstrip("/"), url + "/"}:
+            cands[f"url={u} | i4 sort"] = json.dumps({"url": u}, indent=4, sort_keys=True)
+            cands[f"url={u} | compact"] = json.dumps({"url": u}, separators=(",", ":"))
+            cands[f"url={u} | default"] = json.dumps({"url": u})
+            cands[f"url={u} | sort"] = json.dumps({"url": u}, sort_keys=True)
+            cands[f"url={u} | ham"] = u
+        ad = {k: v for k, v in auth_data.items() if k != "signature"}
+        cands["auth_data(sig hariç) i4 sort"] = json.dumps(ad, indent=4, sort_keys=True)
+        cands["auth_data(sig hariç) compact"] = json.dumps(ad, separators=(",", ":"))
+        for fld in ("request_idx", "reqnum", "endpoint", "cost"):
+            if fld in auth_data:
+                cands[f"{fld} ham"] = str(auth_data[fld])
+
+        hits = [n for n, m in cands.items() if verify(m, sig)]
+        if hits:
+            log.error(f"PROBE: ✅ auth_data imzası ŞU formatta tuttu -> {hits}")
+        else:
+            log.error("PROBE: ❌ auth_data imzası denenen hiçbir formatta tutmadı")
+
     # --- model hazır: SADECE /health ---
 
     async def wait_for_model_ready(self) -> None:
@@ -310,6 +368,7 @@ class Backend:
 
         log.debug(f"auth.url={auth.url!r} | get_url()={get_url()!r} | request_idx={auth.request_idx}")
         if not self.check_signature(auth):
+            self._probe_signature(data["auth_data"], dict(request.query))
             return web.Response(status=401)
 
         info = RequestInfo(request_idx=auth.request_idx, entered_at=time.time(), started_at=time.time())
