@@ -302,24 +302,25 @@ class Backend:
                 continue
         return False
 
-    def _sig_messages(self, auth_data: AuthData):
-        """auth_data.signature'ın atılmış olabileceği mesaj adayları (en olası ilk)."""
-        url = auth_data.url
-        yield "url i4_sort (kanonik)", json.dumps({"url": url}, indent=4, sort_keys=True)
+    def _sig_messages(self, ad: dict):
+        """İmzanın atılmış olabileceği mesaj adayları (DOĞRU olan ilk sırada)."""
+        # *** DOĞRU: tüm auth_data (signature + __request_id hariç), i4-sort ***
+        full = {k: v for k, v in ad.items() if k not in ("signature", "__request_id")}
+        yield "auth_data(full) i4_sort", json.dumps(full, indent=4, sort_keys=True)
+        yield "auth_data(full) compact_sort", json.dumps(full, sort_keys=True)
+        # Eski/diğer dağıtımlar için fallback'ler:
+        url = ad.get("url", "")
+        yield "url i4_sort", json.dumps({"url": url}, indent=4, sort_keys=True)
         yield "url compact_sort", json.dumps({"url": url}, sort_keys=True)
-        yield "url compact", json.dumps({"url": url}, separators=(",", ":"))
-        yield "url default", json.dumps({"url": url})
         yield "url ham", url
-        yield "url(no slash) i4_sort", json.dumps({"url": url.rstrip("/")}, indent=4, sort_keys=True)
-        yield "url(slash) i4_sort", json.dumps({"url": url + "/"}, indent=4, sort_keys=True)
 
-    def check_signature(self, auth_data: AuthData) -> bool:
+    def check_signature(self, auth_data: dict) -> bool:
         if UNSECURED:
             return True
         if self._pubkey is None:
             log.error("İmza reddedildi: pubkey yüklenmemiş")
             return False
-        sig_b64 = auth_data.signature
+        sig_b64 = auth_data.get("signature", "")
         # Daha önce tutan formatı önce dene
         if self._sig_format_name:
             for name, msg in self._sig_messages(auth_data):
@@ -420,6 +421,28 @@ class Backend:
 
     def _debug_signature_formats(self, auth_data: dict) -> None:
         """İmzanın GERÇEKTE hangi string üzerine atıldığını bulmak için çok sayıda format dener."""
+        # --- TAM (kırpılmamış) DÖKÜM -> dosya (log truncation'ı atlamak için) ---
+        if not getattr(self, "_sig_dump_written", False):
+            try:
+                dump = {
+                    "get_url": get_url(),
+                    "auth_data": auth_data,
+                    "api_key_raw": getattr(self, "_last_api_key", None),
+                    "pubkey_pem": self._pubkey.export_key().decode() if self._pubkey else None,
+                }
+                path = "/workspace/sig_debug.json"
+                try:
+                    with open(path, "w") as f:
+                        json.dump(dump, f, indent=2)
+                except Exception:
+                    path = "/root/sig_debug.json"
+                    with open(path, "w") as f:
+                        json.dump(dump, f, indent=2)
+                self._sig_dump_written = True
+                log.info(f"🔎 TAM İMZA DÖKÜMÜ yazıldı: {path}  ->  `cat {path}` ile paylaş")
+            except Exception as e:
+                log.info(f"sig_debug yazılamadı: {e}")
+
         try:
             sig = base64.b64decode(auth_data["signature"])
         except Exception as e:
@@ -521,15 +544,13 @@ class Backend:
         except Exception as e:
             return web.json_response({"error": f"invalid request: {e}"}, status=422)
 
-        log.debug(f"Gelen auth_data: {data.get('auth_data')}")
-        log.debug(f"Gelen query string: {dict(request.query)}")
-        log.debug(f"Worker'ın kendi get_url(): {get_url()}")
-
         self._last_api_key = request.query.get("api_key")
-        if not UNSECURED and self._pubkey is not None:
-            self._debug_signature_formats(data["auth_data"])
 
-        if not self.check_signature(auth_data):
+        if not self.check_signature(data["auth_data"]):
+            # Sadece BAŞARISIZ olursa teşhis çalıştır (artık normalde tutmalı)
+            if not UNSECURED and self._pubkey is not None:
+                log.debug(f"Gelen auth_data: {data.get('auth_data')}")
+                self._debug_signature_formats(data["auth_data"])
             return web.Response(status=401)
 
         request_idx = auth_data.request_idx
