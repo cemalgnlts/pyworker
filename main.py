@@ -47,8 +47,7 @@ UNSECURED = os.environ.get("UNSECURED", "false").lower() == "true"
 MASTER_TOKEN = os.environ.get("MASTER_TOKEN", "")
 PYWORKER_VERSION = os.environ.get("PYWORKER_VERSION", "llamacpp-1.0")
 
-# Model sunucusu adresleri — Vast openai şablonunun KULLANDIĞI env isimleri öncelikli:
-#   MODEL_SERVER_URL (örn http://127.0.0.1:5000), MODEL_HEALTH_ENDPOINT (örn http://127.0.0.1:1800/health)
+# Model sunucusu adresi — Vast openai şablonundaki MODEL_SERVER_URL (örn http://127.0.0.1:5000).
 # Yoksa LLAMA_ARG_PORT'tan türet, o da yoksa 8080.
 _MODEL_PORT = os.environ.get("LLAMA_ARG_PORT", "8080")
 MODEL_BASE_URL = (
@@ -56,11 +55,8 @@ MODEL_BASE_URL = (
     or os.environ.get("MODEL_BASE_URL")
     or f"http://127.0.0.1:{_MODEL_PORT}"
 ).rstrip("/")
-MODEL_HEALTH_URL = (
-    os.environ.get("MODEL_HEALTH_ENDPOINT")
-    or os.environ.get("MODEL_HEALTH_URL")
-    or f"{MODEL_BASE_URL}/health"
-)
+# Health: DAİMA llama portu + /health (MODEL_HEALTH_ENDPOINT başka amaçlı, kullanma).
+MODEL_HEALTH_URL = os.environ.get("MODEL_HEALTH_URL", f"{MODEL_BASE_URL}/health")
 
 # === İstek tabanlı ölçek ===
 WORKER_PERF = float(os.environ.get("WORKER_PERF", "100"))
