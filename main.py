@@ -60,14 +60,21 @@ MODEL_BASE_URL = os.environ.get("MODEL_BASE_URL", "http://127.0.0.1:5000")
 
 FAKE_MAX_THROUGHPUT = float(os.environ.get("FAKE_MAX_THROUGHPUT", "100.0"))  # benchmark yok, sabit değer
 
-# === İSTEK TABANLI ÖLÇEK (eklendi) =========================================
-# perf sabit (WORKER_PERF). Her istek SABİT load taşır.
-# Bir worker'ı dolduran istek sayısı = WORKER_PERF / WORKLOAD_PER_REQUEST.
-#   örn WORKER_PERF=100, REQUESTS_PER_WORKER=4 -> her istek 25 load,
-#   4 istekte cur_load=100=perf (doluluk %100).
-WORKER_PERF = float(os.environ.get("WORKER_PERF", str(FAKE_MAX_THROUGHPUT)))
+# === İSTEK TABANLI ÖLÇEK ====================================================
+# ÖNEMLİ: Autoscaler istek başına yükü auth_data.cost'tan alır (endpoint belirler,
+# genelde max_tokens'a bağlı). Worker bunu DEĞİŞTİREMEZ, sadece raporlar.
+#   cur_load = o an işlenen isteklerin GERÇEK cost'larının toplamı.
+#   max_perf = WORKER_PERF (sabit kapasite).
+# "N istekte dolsun" için: WORKER_PERF = REQUESTS_PER_WORKER * COST_PER_REQUEST.
+#   örn cost=512, REQUESTS_PER_WORKER=4 -> WORKER_PERF=2048; 4 istekte cur_load=2048=perf.
 REQUESTS_PER_WORKER = float(os.environ.get("REQUESTS_PER_WORKER", "4"))
-WORKLOAD_PER_REQUEST = WORKER_PERF / max(REQUESTS_PER_WORKER, 1e-9)
+# Endpoint'in istek başına tipik cost'u (loglarda görülen "load" değeri).
+COST_PER_REQUEST = float(os.environ.get("COST_PER_REQUEST", "512"))
+# WORKER_PERF verilmezse REQUESTS_PER_WORKER * COST_PER_REQUEST'ten hesaplanır.
+_wp = os.environ.get("WORKER_PERF")
+WORKER_PERF = float(_wp) if _wp else REQUESTS_PER_WORKER * COST_PER_REQUEST
+# auth_data.cost gelmezse kullanılacak yedek istek-yükü.
+WORKLOAD_PER_REQUEST = COST_PER_REQUEST
 # ===========================================================================
 
 HEALTHCHECK_POLL_INTERVAL = 0.3
@@ -154,10 +161,11 @@ class Metrics:
         self.update_pending = True  # bir sonraki tick'te HEMEN bildir (bkz. daha önceki sohbet)
         log.debug(f"model_is_loaded=True, loadtime={self.loadtime:.3f}s, hemen bildiriliyor")
 
-    def request_start(self, request_idx: int) -> None:
-        self.requests_working[request_idx] = True
+    def request_start(self, request_idx: int, cost: float = WORKLOAD_PER_REQUEST) -> None:
+        # İstek başına GERÇEK cost'u sakla (autoscaler bu birimi kullanıyor)
+        self.requests_working[request_idx] = float(cost) if cost else WORKLOAD_PER_REQUEST
         self.update_pending = True
-        log.debug(f"request_start idx={request_idx}, working={list(self.requests_working.keys())}")
+        log.debug(f"request_start idx={request_idx} cost={self.requests_working[request_idx]}, working={list(self.requests_working.keys())}")
 
     def request_end(self, request_idx: int, success: bool) -> None:
         self.requests_working.pop(request_idx, None)
@@ -183,7 +191,7 @@ class Metrics:
             "loadtime": self.loadtime or 0.0,
             "error_msg": self.error_msg,
             "max_perf": self.max_throughput,
-            "cur_load": len(self.requests_working) * WORKLOAD_PER_REQUEST,
+            "cur_load": float(sum(self.requests_working.values())),
             "num_requests_working": len(self.requests_working),
             "url": get_url(),
         }
@@ -554,7 +562,7 @@ class Backend:
             return web.Response(status=401)
 
         request_idx = auth_data.request_idx
-        self.metrics.request_start(request_idx)
+        self.metrics.request_start(request_idx, cost=getattr(auth_data, "cost", None) or WORKLOAD_PER_REQUEST)
         try:
             async with self.session.post(f"{MODEL_BASE_URL}{request.path}", json=payload) as res:
                 result = await res.json()
