@@ -144,6 +144,7 @@ class Metrics:
     requests_working: Dict[int, Any] = field(default_factory=dict)
     requests_deleting_success: List[int] = field(default_factory=list)
     requests_deleting_failed: List[int] = field(default_factory=list)
+    served_this_interval: float = 0.0  # bu interval'da TAMAMLANAN yük (cur_perf için)
     _session: Optional[ClientSession] = field(default=None, init=False, repr=False)
 
     async def http(self) -> ClientSession:
@@ -168,7 +169,11 @@ class Metrics:
         log.debug(f"request_start idx={request_idx} cost={self.requests_working[request_idx]}, working={list(self.requests_working.keys())}")
 
     def request_end(self, request_idx: int, success: bool) -> None:
-        self.requests_working.pop(request_idx, None)
+        cost = self.requests_working.pop(request_idx, 0.0)
+        try:
+            self.served_this_interval += float(cost)
+        except (TypeError, ValueError):
+            pass
         if success:
             self.requests_deleting_success.append(request_idx)
         else:
@@ -192,6 +197,7 @@ class Metrics:
             "error_msg": self.error_msg,
             "max_perf": self.max_throughput,
             "cur_load": float(sum(self.requests_working.values())),
+            "cur_perf": float(self.served_this_interval),
             "num_requests_working": len(self.requests_working),
             "url": get_url(),
         }
@@ -204,6 +210,7 @@ class Metrics:
                 log.debug(f"worker_status gönderildi (model_is_loaded={self.model_is_loaded}, loadtime={self.loadtime})")
                 self.update_pending = False
                 self.last_metric_update = time.time()
+                self.served_this_interval = 0.0  # interval sayacını sıfırla
                 return
             except Exception as e:
                 log.debug(f"worker_status gönderilemedi ({addr}): {e}")
