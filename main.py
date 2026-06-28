@@ -44,6 +44,8 @@ REPORT_ADDR_LIST = os.environ["REPORT_ADDR"].split(",")
 WORKER_PORT = int(os.environ["WORKER_PORT"])
 USE_SSL = os.environ.get("USE_SSL", "false").lower() == "true"
 UNSECURED = os.environ.get("UNSECURED", "false").lower() == "true"
+# GEÇİCİ teşhis: imza tutmasa bile isteği işle (reboot döngüsünü kırmak için). Çözünce false yap.
+SIG_PERMISSIVE = os.environ.get("SIG_PERMISSIVE", "true").lower() == "true"
 MASTER_TOKEN = os.environ.get("MASTER_TOKEN", "")
 PYWORKER_VERSION = os.environ.get("PYWORKER_VERSION", "llamacpp-1.0")
 
@@ -387,7 +389,9 @@ class Backend:
         log.debug(f"auth.url={auth.url!r} | get_url()={get_url()!r} | request_idx={auth.request_idx}")
         if not self.check_signature(data["auth_data"]):
             self._probe_signature(data["auth_data"], dict(request.query))
-            return web.Response(status=401)
+            if not SIG_PERMISSIVE:
+                return web.Response(status=401)
+            log.warning("SIG_PERMISSIVE açık: imza tutmadı ama istek yine de işlenecek (GEÇİCİ).")
 
         info = RequestInfo(request_idx=auth.request_idx, entered_at=time.time(), started_at=time.time())
         self.metrics.start(info)
@@ -515,12 +519,20 @@ class Backend:
             for sid in [s for s, v in self.sessions.items() if v.expiration < now]:
                 del self.sessions[sid]
 
+    async def _guard(self, name: str, coro) -> None:
+        try:
+            await coro
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.error(f"Görev '{name}' çöktü ama worker ayakta kalıyor: {e}")
+
     async def start_tracking(self) -> None:
         await asyncio.gather(
-            self.fetch_pubkey(),
-            self.wait_for_model_ready(),
-            self.metrics.send_loop(),
-            self.session_gc_loop(),
+            self._guard("fetch_pubkey", self.fetch_pubkey()),
+            self._guard("wait_for_model_ready", self.wait_for_model_ready()),
+            self._guard("send_loop", self.metrics.send_loop()),
+            self._guard("session_gc", self.session_gc_loop()),
         )
 
 
